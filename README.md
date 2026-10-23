@@ -66,7 +66,7 @@ change both for another unit. Pair it once with `bluetoothctl` first.
   Unresolved.
 - How many gallery pages and files the speaker holds is unknown: it doesn't
   answer the info query. Clearing a page and replacing the boot animation are
-  accepted by the speaker but were checked by eye, not by a readback.
+  sent without error, but the speaker gives no readback to confirm either.
 - `ditoo-github` runs hourly and takes over the screen when it does; switch
   back with `ditoo-screen gallery 0` or disable `ditoo-github.timer`.
 - Restarting WirePlumber while the speaker is connected drops A2DP and can wedge
