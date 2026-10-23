@@ -28,14 +28,16 @@ payload, so a parser has to check that the candidate frame ends in `0x02` with
 | --- | --- | --- |
 | `0x44` | `00 0A 0A 04` + frame | Show a still image |
 | `0x49` | total LE16, chunk index, ≤200 bytes | Show an animation, sent in chunks |
-| `0x45` | view, … | Set view: 0 clock, 1 light, 5 user-define (gallery) |
+| `0x45` | view, … | Set view: 0 clock, 1 light, 3 VJ effect n, 4 music EQ n, 5 user-define (gallery). Clock: `00 24h style 01 0 0 0 R G B`; light: `01 R G B brightness effect power 0 0 0` |
 | `0x46` | | Get view |
 | `0x74` | 0–100 | Brightness |
 | `0x18` | yy, cc, mm, dd, h, m, s, weekday | Set date and time |
 | `0x2d` | 0/1 | 12/24-hour clock |
 | `0x8c` | see below | Save frames into a user-define slot |
 | `0xbd 0x17` | slot | Show user-define slot |
-| `0xbd 0x16` | slot | Clear user-define slot (*unconfirmed*) |
+| `0xbd 0x16` | slot | Clear user-define page, stock pictures included |
+| `0x52` | on, total LE16, chunk index, ≤200 bytes | Boot animation, chunked like `0x49` with an on/off byte in front |
+| `0x8a` | `01` channel | Power-on channel: 0 clock, 1 light, 2 cloud, 3 VJ, 4 EQ, 5 gallery (`00` reads it) |
 | `0xbd 0x15` | | Get user-define cycle time (reports 30 s) |
 | `0x8e` | slot | Get user-define info: no useful reply from this firmware |
 
@@ -58,3 +60,8 @@ Bits per index = ceil(log2(colour count)), minimum 1. Up to 60 frames is safe.
 3. `0x8c 02`: end.
 
 Then `0x45 05` and `0xbd 17 slot` to show it. Stored art survives power-off.
+
+A "slot" is really a gallery page holding a list of files: each upload to the
+same index adds a file, and the page cycles through them (30 s each by default,
+`0xbd 0x15`). Open a single connection for a batch of uploads; reconnecting
+immediately after closing fails with EBUSY.

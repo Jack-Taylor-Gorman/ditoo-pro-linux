@@ -6,11 +6,15 @@ projects: messages are 0x01, len(LE16), cmd, args, sum(LE16), 0x02 over RFCOMM.
 
   ditoo-screen color R G B [BRIGHTNESS]   solid colour light
   ditoo-screen brightness 0-100
-  ditoo-screen clock [STYLE 0-15] [--12h]   built-in clock, synced to this PC
+  ditoo-screen clock [STYLE 0-15] [--12h] [--color R,G,B]   built-in clock, synced to this PC
   ditoo-screen image FILE [MS]              PNG/JPG, or animated GIF
   ditoo-screen text "MESSAGE" [R G B] [MS]  scrolling text
   ditoo-screen store FILE [SLOT]            save onto the speaker (plays with no PC)
   ditoo-screen gallery [SLOT]               show what is saved on the speaker
+  ditoo-screen clear SLOT                   empty a saved page (stock pictures included)
+  ditoo-screen boot FILE                    replace the power-on animation
+  ditoo-screen poweron CHANNEL              channel shown at power-on: 0 clock, 1 light,
+                                            2 cloud, 3 VJ effects, 4 music EQ, 5 gallery
   ditoo-screen off | on
 """
 import datetime, math, select, socket, sys, time
@@ -24,6 +28,7 @@ CHUNK = 200
 SET_DATE_TIME, SET_TIME_TYPE = 0x18, 0x2d
 SET_IMAGE, SET_VIEW, SET_ANIMATION_FRAME, SET_BRIGHTNESS = 0x44, 0x45, 0x49, 0x74
 USER_DEFINE, EXTENDED, USE_USER_DEFINE_INDEX = 0x8c, 0xbd, 0x17
+CLEAR_USER_DEFINE_INDEX, SET_BOOT_GIF, POWER_ON_CHANNEL = 0x16, 0x52, 0x8a
 VIEW_USER_DEFINE = 0x05
 
 
@@ -88,18 +93,32 @@ class Ditoo:
         if slot is not None:
             self.send(EXTENDED, [USE_USER_DEFINE_INDEX, slot])
 
+    def clear(self, slot):
+        self.send(EXTENDED, [CLEAR_USER_DEFINE_INDEX, slot])
+
+    def boot(self, frames):
+        """Power-on animation: the 0x49 chunking with an on/off byte in front."""
+        data = [b for img, ms in frames for b in encode_frame(img, ms)]
+        for index, start in enumerate(range(0, len(data), CHUNK)):
+            self.send(SET_BOOT_GIF, [0x01] + list(len(data).to_bytes(2, "little"))
+                      + [index] + data[start:start + CHUNK])
+            time.sleep(0.05)
+
+    def poweron(self, channel):
+        self.send(POWER_ON_CHANNEL, [0x01, channel])
+
     def light(self, rgb, brightness=100, power=True):
         self.send(SET_VIEW, [0x01, *rgb, brightness, 0x00, 0x01 if power else 0x00, 0, 0, 0])
 
     def brightness(self, value):
         self.send(SET_BRIGHTNESS, [value])
 
-    def clock(self, style=0, twentyfour=True):
+    def clock(self, style=0, twentyfour=True, rgb=None):
         now = datetime.datetime.now()
         self.send(SET_DATE_TIME, [now.year % 100, now.year // 100, now.month, now.day,
                                   now.hour, now.minute, now.second, now.isoweekday() % 7])
         self.send(SET_TIME_TYPE, [1 if twentyfour else 0])
-        self.send(SET_VIEW, [0x00, 1 if twentyfour else 0, style, 0x01, 0, 0, 0])
+        self.send(SET_VIEW, [0x00, 1 if twentyfour else 0, style, 0x01, 0, 0, 0] + list(rgb or []))
 
     def frames(self, frames):
         """frames: list of (16x16 RGB PIL image, duration ms)."""
@@ -179,7 +198,8 @@ def main(argv):
             d.brightness(int(rest[0]))
         elif cmd == "clock":
             nums = [a for a in rest if a.isdigit()]
-            d.clock(int(nums[0]) if nums else 0, "--12h" not in rest)
+            rgb = [int(x) for x in rest[rest.index("--color") + 1].split(",")] if "--color" in rest else None
+            d.clock(int(nums[0]) if nums else 0, "--12h" not in rest, rgb)
         elif cmd == "image":
             d.frames(load_image(rest[0], int(rest[1]) if len(rest) > 1 else None))
         elif cmd == "text":
@@ -190,6 +210,12 @@ def main(argv):
             d.store(load_image(rest[0], None), int(rest[1]) if len(rest) > 1 else 0)
         elif cmd == "gallery":
             d.gallery(int(rest[0]) if rest else None)
+        elif cmd == "clear":
+            d.clear(int(rest[0]))
+        elif cmd == "boot":
+            d.boot(load_image(rest[0], None))
+        elif cmd == "poweron":
+            d.poweron(int(rest[0]))
         elif cmd == "off":
             d.light([1, 1, 1], 0, power=False)
         elif cmd == "on":

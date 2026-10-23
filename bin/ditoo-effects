@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Mr Mouz orange-and-white versions of the speaker's light effects.
+
+The built-in VJ effects and music EQ take no colour, so these are drawn here
+and saved into a gallery page instead. Previews (20x) land in
+~/Pictures/ditoo/effects/.
+
+  ditoo-effects                  write the previews only
+  ditoo-effects --store [SLOT [NAME...]]   also save them (or just NAME...) into that page (default 1)
+  ditoo-effects --show NAME      play one on the speaker without saving it
+"""
+import math, os, random, sys, time
+from importlib.machinery import SourceFileLoader
+from PIL import Image
+
+screen = SourceFileLoader("ditoo_screen", os.path.expanduser("~/.local/bin/ditoo-screen")).load_module()
+OUT = os.path.expanduser("~/Pictures/ditoo/effects")
+N = 16
+
+# Mr Mouz's own two colours, plus the steps between them that read on LEDs.
+OFF = (0, 0, 0)
+EMBER = (70, 18, 0)
+ORANGE = (255, 90, 0)
+PEACH = (255, 170, 100)
+WHITE = (255, 255, 255)
+RAMP = [OFF, EMBER, ORANGE, PEACH, WHITE]
+
+
+def canvas():
+    return Image.new("RGB", (N, N))
+
+
+def ramp(level):
+    """0..1 brightness to one of the five palette colours."""
+    return RAMP[max(0, min(len(RAMP) - 1, round(level * (len(RAMP) - 1))))]
+
+
+def ripple(frames=24):
+    out = []
+    for f in range(frames):
+        img = canvas()
+        for y in range(N):
+            for x in range(N):
+                r = math.hypot(x - 7.5, y - 7.5)
+                wave = math.cos((r - f * 0.5) * 1.1)
+                img.putpixel((x, y), ramp((wave + 1) / 2 * max(0.2, 1 - r / 13)))
+        out.append(img)
+    return out
+
+
+def rain(frames=32):
+    rng = random.Random(3)
+    drops = [[rng.randrange(N), rng.uniform(-N, N), rng.uniform(0.5, 1.2)] for _ in range(14)]
+    out = []
+    for _ in range(frames):
+        img = canvas()
+        for d in drops:
+            x, y, speed = d
+            for t, colour in enumerate((WHITE, PEACH, ORANGE, EMBER)):
+                yy = int(y) - t
+                if 0 <= yy < N:
+                    img.putpixel((x, yy), colour)
+            d[1] += speed
+            if d[1] - 4 > N:
+                d[0], d[1] = rng.randrange(N), rng.uniform(-6, 0)
+        out.append(img)
+    return out
+
+
+def scanner(frames=30):
+    out = []
+    for f in range(frames):
+        img = canvas()
+        centre = 7.5 + 8 * math.sin(f / frames * 2 * math.pi)
+        for y in range(N):
+            level = max(0.0, 1 - abs(y - centre) / 4)
+            for x in range(N):
+                img.putpixel((x, y), ramp(level))
+        out.append(img)
+    return out
+
+
+def plasma(frames=36):
+    out = []
+    for f in range(frames):
+        img = canvas()
+        t = f / frames * 2 * math.pi
+        for y in range(N):
+            for x in range(N):
+                v = (math.sin(x / 2.5 + t) + math.sin(y / 3.0 - t)
+                     + math.sin((x + y) / 4.0 + t) + math.sin(math.hypot(x - 8, y - 8) / 2.0 - t))
+                img.putpixel((x, y), ramp((v + 4) / 8))
+        out.append(img)
+    return out
+
+
+def equaliser(frames=32):
+    """Looks like the music EQ, but plays with no audio to follow."""
+    rng = random.Random(7)
+    heights = [rng.uniform(2, 14) for _ in range(8)]
+    out = []
+    for _ in range(frames):
+        img = canvas()
+        for i, h in enumerate(heights):
+            top = N - int(h)
+            for y in range(top, N):
+                colour = WHITE if y == top else ORANGE
+                for x in (i * 2, i * 2 + 1):
+                    img.putpixel((x, y), colour)
+            heights[i] = max(1, min(15, h + rng.uniform(-4, 4)))
+        out.append(img)
+    return out
+
+
+def sparkle(frames=32):
+    rng = random.Random(11)
+    life = {}
+    out = []
+    for _ in range(frames):
+        img = canvas()
+        for _ in range(4):
+            life[(rng.randrange(N), rng.randrange(N))] = 4
+        for xy, level in list(life.items()):
+            img.putpixel(xy, RAMP[level])
+            life[xy] = level - 1
+            if not life[xy]:
+                del life[xy]
+        out.append(img)
+    return out
+
+
+def spin(frames=24):
+    out = []
+    for f in range(frames):
+        img = canvas()
+        a = f / frames * 2 * math.pi
+        for y in range(N):
+            for x in range(N):
+                angle = (math.atan2(y - 7.5, x - 7.5) - a) % (2 * math.pi)
+                r = math.hypot(x - 7.5, y - 7.5)
+                level = max(0.0, 1 - angle / 2.2) if r < 8.5 else 0
+                img.putpixel((x, y), ramp(level))
+        out.append(img)
+    return out
+
+
+EFFECTS = {"ripple": (ripple, 90), "rain": (rain, 80), "scanner": (scanner, 60),
+           "plasma": (plasma, 90), "equaliser": (equaliser, 110), "sparkle": (sparkle, 90),
+           "spin": (spin, 60)}
+
+
+def render(name):
+    make, ms = EFFECTS[name]
+    return [(img, ms) for img in make()]
+
+
+def preview(name, frames):
+    os.makedirs(OUT, exist_ok=True)
+    big = [img.resize((N * 20, N * 20), Image.NEAREST) for img, _ in frames]
+    path = os.path.join(OUT, f"{name}.gif")
+    big[0].save(path, save_all=True, append_images=big[1:], duration=frames[0][1], loop=0)
+    return path
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print(__doc__)
+        return 0
+    if "--show" in argv:
+        d = screen.Ditoo()
+        try:
+            d.frames(render(argv[argv.index("--show") + 1]))
+        finally:
+            d.close()
+        return 0
+    rendered = {name: render(name) for name in EFFECTS}
+    for name, frames in rendered.items():
+        print(preview(name, frames))
+    if "--store" in argv:
+        i = argv.index("--store")
+        slot = int(argv[i + 1]) if len(argv) > i + 1 else 1
+        names = [n for n in argv[i + 2:] if n in EFFECTS] or list(EFFECTS)
+        # One connection for the lot: reopening straight after a close gets EBUSY.
+        d = screen.Ditoo()
+        try:
+            for name in names:
+                d.store(rendered[name], slot)
+                print(f"stored {name} in slot {slot}")
+                time.sleep(1)
+        finally:
+            d.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
