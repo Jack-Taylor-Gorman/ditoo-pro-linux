@@ -15,6 +15,22 @@ Effects redrawn in Mr Mouz orange and white:
 
 ![](media/effects/ripple.gif) ![](media/effects/plasma.gif) ![](media/effects/rain.gif) ![](media/effects/equaliser.gif) ![](media/effects/scanner.gif) ![](media/effects/sparkle.gif) ![](media/effects/spin.gif)
 
+## Arcade
+
+`ditoo-arcade` plays 15 games on the screen, streamed from the PC at 30 fps,
+with chiptune sound effects and music through the speaker itself and a big
+LED mirror window on the desktop: Super Hexagon, Snake, Tetris, Breakout,
+Flappy, Stacker, Invaders, Racer, Dodge, Pong, Frogger, Simon, Helicopter,
+Asteroids and Minesweeper. Every game speeds up as you go, reacts on the frame
+you press, and makes a sound for everything you do. High scores persist.
+
+Keys: arrows/WASD, Space/Z = A, X = B, Enter = pause, Esc = back. Any gamepad
+works. `ditoo-arcade hexagon` jumps straight into a game;
+`ditoo-arcade --test` runs a random-button bot through all of them headless.
+
+The games can't live inside the speaker: its firmware has a fixed set. The PC
+does the playing and the Ditoo is the screen and speaker.
+
 ## What's here
 
 | Path | What it does |
@@ -22,6 +38,7 @@ Effects redrawn in Mr Mouz orange and white:
 | `bin/ditoo-screen` | The protocol: colour, brightness, clock, image/GIF, scrolling text, store to a memory slot, show a slot |
 | `bin/ditoo-picture` | Any photo or GIF → 16×16 pixel art. Cuts the subject out (rembg), keeps small features like eyes alive through the shrink, optionally stores it on the speaker |
 | `bin/ditoo-effects` | Orange-and-white light effects (ripple, rain, scanner, plasma, equaliser, sparkle, spin) saved into a gallery page, since the built-in VJ effects and music EQ take no colour |
+| `bin/ditoo-arcade`, `arcade/` | The arcade: engine (canvas, input, menu, scores), synthesised sound, one file per game in `arcade/games/` |
 | `bin/ditoo-github` | Last 32 weeks of contributions, folded into two 16-week bands; today blinks |
 | `bin/ditoo-audio.sh` | Watcher that reconnects the speaker, forces the A2DP profile and makes it the default output |
 | `systemd/` | User units: the audio watcher, and the hourly GitHub refresh |
@@ -67,6 +84,10 @@ change both for another unit. Pair it once with `bluetoothctl` first.
 - How many gallery pages and files the speaker holds is unknown: it doesn't
   answer the info query. Clearing a page and replacing the boot animation are
   sent without error, but the speaker gives no readback to confirm either.
+- Game sound goes to the Ditoo by opening it by name in SDL ("DitooPro-Audio").
+  `PULSE_SINK` and `pactl move-sink-input` both lose to SDL naming the
+  default output itself. Over the speaker's headset profile the sound is 16 kHz
+  mono and lags the picture by Bluetooth's usual ~150 ms.
 - `ditoo-github` runs hourly and takes over the screen when it does; switch
   back with `ditoo-screen gallery 0` or disable `ditoo-github.timer`.
 - Restarting WirePlumber while the speaker is connected drops A2DP and can wedge

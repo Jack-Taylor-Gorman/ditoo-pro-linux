@@ -1,0 +1,109 @@
+#!/home/jackgorman/.local/share/ditoo/venv/bin/python
+"""Games on the Ditoo's screen, with sound through the Ditoo.
+
+Runs on this PC: frames stream to the speaker and are mirrored in a window,
+which must have focus for the keyboard to reach the game.
+
+  ditoo-arcade                 menu
+  ditoo-arcade NAME            straight into a game (e.g. hexagon)
+  ditoo-arcade --no-ditoo      window only, sound through the default output
+                               (otherwise sound goes to the Ditoo when it's connected)
+  ditoo-arcade --list
+  ditoo-arcade --test [NAME] [SECONDS]
+        headless: a bot mashes random buttons through every game (or NAME),
+        restarting on death; fails on any exception and writes a 4x GIF of
+        each game to /tmp/ditoo-arcade-test/ to look at
+
+Keys: arrows/WASD move, Space/Z = A, X = B, Enter = start/pause,
+Esc = back. Any gamepad works too.
+"""
+import os, sys, traceback
+
+ROOT = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+sys.path.insert(0, ROOT)
+def test(games, only, seconds):
+    import random
+    from PIL import Image
+    from arcade import engine
+    out = "/tmp/ditoo-arcade-test"
+    os.makedirs(out, exist_ok=True)
+    buttons = [engine.LEFT, engine.RIGHT, engine.UP, engine.DOWN, engine.A, engine.B]
+    failed = 0
+    for cls in games:
+        if only and cls.name.lower() != only.lower():
+            continue
+        rng = random.Random(1)
+        sound = type("S", (), {"play": lambda *_: None, "music": lambda *_: None})()
+        frames, rounds, scores, t, dt = [], 0, [], 0.0, 1 / 30
+        try:
+            game = cls(engine.Context(sound, seed=rounds))
+            canvas = engine.Canvas()
+            inp = engine.Input()
+            while t < seconds:
+                inp.edge = set()
+                for b in buttons:  # hold a button for a while, then let go
+                    if rng.random() < 0.08:
+                        if b in inp.down:
+                            inp.down.discard(b)
+                        else:
+                            inp.down.add(b)
+                            inp.edge.add(b)
+                game.update(inp, dt)
+                canvas.clear()
+                game.draw(canvas)
+                assert canvas.px.shape == (16, 16, 3)
+                if len(frames) < 900 and int(t * 30) % 2 == 0:
+                    frames.append(Image.fromarray(canvas.px.copy()).resize((64, 64), Image.NEAREST))
+                t += dt
+                if game.over:
+                    scores.append(game.score)
+                    rounds += 1
+                    game = cls(engine.Context(sound, seed=rounds))
+            frames[0].save(f"{out}/{cls.name.lower()}.gif", save_all=True,
+                           append_images=frames[1:], duration=66, loop=0)
+            print(f"ok    {cls.name:12} {rounds:3} rounds in {seconds}s, scores {scores[:8]}")
+        except Exception:
+            failed += 1
+            print(f"FAIL  {cls.name:12} at t={t:.1f}s")
+            traceback.print_exc()
+    return 1 if failed else 0
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print(__doc__)
+        return 0
+    if "--test" in argv:
+        os.environ["SDL_AUDIODRIVER"] = "dummy"
+    from arcade import engine, sound
+    from arcade.games import load
+    games = load()
+    if "--list" in argv:
+        print("\n".join(g.name.lower() for g in games))
+        return 0
+    rest = [a for a in argv if not a.startswith("--")]
+    if "--test" in argv:
+        only = next((a for a in rest if not a.isdigit()), None)
+        seconds = int(next((a for a in rest if a.isdigit()), 60))
+        return test(games, only, seconds)
+
+    import pygame
+    pygame.init()
+    snd = sound.Sound(device=None if "--no-ditoo" in argv else sound.DEVICE)
+    display = engine.Display(ditoo="--no-ditoo" not in argv, window=True)
+    start = None
+    if rest:
+        names = [g.name.lower() for g in games]
+        if rest[0].lower() not in names:
+            sys.exit(f"No game {rest[0]!r}; try --list")
+        start = names.index(rest[0].lower())
+    try:
+        engine.Arcade(games, display, engine.PygameInput(), snd).run(start)
+    finally:
+        display.close()
+        pygame.quit()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
