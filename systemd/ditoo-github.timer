@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the Ditoo GitHub graph hourly
+
+[Timer]
+OnStartupSec=2min
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep Ditoo Pro Bluetooth speaker connected as default audio output
+After=pipewire-pulse.service wireplumber.service
+Wants=pipewire-pulse.service wireplumber.service
+
+[Service]
+ExecStartPre=/bin/sleep 5
+ExecStart=%h/.local/bin/ditoo-audio.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

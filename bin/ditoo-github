@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Show the GitHub contribution graph on the Ditoo Pro's 16x16 screen.
+
+The real graph is 53 weeks x 7 days, so it is folded into two bands of 16 weeks:
+rows 0-6 are weeks 32-17 ago, rows 8-14 the latest 16 weeks, Sunday on top as on
+GitHub. Today's cell blinks white.
+
+  ditoo-github            fetch and send to the speaker
+  ditoo-github --preview  also write a scaled-up PNG to the path given after it
+"""
+import datetime, json, os, subprocess, sys
+from importlib.machinery import SourceFileLoader
+from PIL import Image
+
+screen = SourceFileLoader("ditoo_screen", os.path.expanduser("~/.local/bin/ditoo-screen")).load_module()
+
+# GitHub dark-theme greens.
+LEVELS = {
+    "NONE": (0x16, 0x1b, 0x22),
+    "FIRST_QUARTILE": (0x0e, 0x44, 0x29),
+    "SECOND_QUARTILE": (0x00, 0x6d, 0x32),
+    "THIRD_QUARTILE": (0x26, 0xa6, 0x41),
+    "FOURTH_QUARTILE": (0x39, 0xd3, 0x53),
+}
+TODAY = (255, 255, 255)
+QUERY = ("query{viewer{contributionsCollection{contributionCalendar{weeks{"
+         "contributionDays{date weekday contributionLevel}}}}}}")
+
+
+def fetch_weeks():
+    out = subprocess.run(["gh", "api", "graphql", "-f", f"query={QUERY}"],
+                         check=True, capture_output=True, text=True).stdout
+    return json.loads(out)["data"]["viewer"]["contributionsCollection"]["contributionCalendar"]["weeks"]
+
+
+def render(weeks):
+    weeks = weeks[-32:]
+    today = datetime.date.today().isoformat()
+    base = Image.new("RGB", (16, 16))
+    blink = base.copy()
+    offset = 32 - len(weeks)  # keeps the latest week in the bottom-right column
+    for w, week in enumerate(weeks):
+        i = w + offset
+        x, top = i % 16, 0 if i < 16 else 8
+        for day in week["contributionDays"]:
+            xy = (x, top + day["weekday"])
+            colour = LEVELS.get(day["contributionLevel"], LEVELS["NONE"])
+            base.putpixel(xy, colour)
+            blink.putpixel(xy, TODAY if day["date"] == today else colour)
+    return base, blink
+
+
+def main(argv):
+    base, blink = render(fetch_weeks())
+    if "--preview" in argv:
+        path = argv[argv.index("--preview") + 1]
+        base.resize((320, 320), Image.NEAREST).save(path)
+    d = screen.Ditoo()
+    try:
+        d.frames([(base, 1000), (blink, 1000)])
+    finally:
+        d.close()
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

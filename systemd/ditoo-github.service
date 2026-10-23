@@ -1,0 +1,7 @@
+[Unit]
+Description=Show GitHub contribution graph on the Ditoo Pro screen
+After=ditoo-audio.service
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/ditoo-github

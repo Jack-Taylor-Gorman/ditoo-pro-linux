@@ -1,0 +1,206 @@
+#!/usr/bin/env python3
+"""Drive the Ditoo Pro's 16x16 display over its Bluetooth serial port.
+
+Protocol from the reverse-engineered hass-divoom / node-divoom-timebox-evo
+projects: messages are 0x01, len(LE16), cmd, args, sum(LE16), 0x02 over RFCOMM.
+
+  ditoo-screen color R G B [BRIGHTNESS]   solid colour light
+  ditoo-screen brightness 0-100
+  ditoo-screen clock [STYLE 0-15] [--12h]   built-in clock, synced to this PC
+  ditoo-screen image FILE [MS]              PNG/JPG, or animated GIF
+  ditoo-screen text "MESSAGE" [R G B] [MS]  scrolling text
+  ditoo-screen store FILE [SLOT]            save onto the speaker (plays with no PC)
+  ditoo-screen gallery [SLOT]               show what is saved on the speaker
+  ditoo-screen off | on
+"""
+import datetime, math, select, socket, sys, time
+from PIL import Image, ImageDraw, ImageFont, ImageSequence
+
+MAC = "B1:21:81:C1:B3:E2"
+CHANNEL = 2  # Serial Port record in the speaker's SDP, not the HFP channel 1
+SIZE = 16
+CHUNK = 200
+
+SET_DATE_TIME, SET_TIME_TYPE = 0x18, 0x2d
+SET_IMAGE, SET_VIEW, SET_ANIMATION_FRAME, SET_BRIGHTNESS = 0x44, 0x45, 0x49, 0x74
+USER_DEFINE, EXTENDED, USE_USER_DEFINE_INDEX = 0x8c, 0xbd, 0x17
+VIEW_USER_DEFINE = 0x05
+
+
+class Ditoo:
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+        self.sock.settimeout(10)
+        self.sock.connect((MAC, CHANNEL))
+        time.sleep(0.5)
+
+    def close(self):
+        # The speaker drops trailing data if the socket closes straight after a write.
+        time.sleep(0.3)
+        self.sock.close()
+
+    def send(self, cmd, args=()):
+        payload = list((len(args) + 3).to_bytes(2, "little")) + [cmd] + list(args)
+        total = sum(payload)
+        payload += list(total.to_bytes(4 if total >= 0xffff else 2, "little"))
+        self.sock.sendall(bytes([0x01] + payload + [0x02]))
+
+    def replies(self, wait):
+        """(cmd, data after the 0x55 ack) for each reply frame received within wait seconds."""
+        buf, end = b"", time.time() + wait
+        while time.time() < end:
+            if select.select([self.sock], [], [], 0.1)[0]:
+                buf += self.sock.recv(4096)
+        out = []
+        while (start := buf.find(b"\x01")) >= 0 and len(buf) >= start + 4:
+            length = int.from_bytes(buf[start + 1:start + 3], "little")
+            frame = buf[start:start + length + 4]
+            if len(frame) < length + 4 or frame[-1] != 0x02 or frame[3] != 0x04:
+                buf = buf[start + 1:]  # a 0x01 inside some payload, not a frame start
+                continue
+            out.append((frame[4], list(frame[6:length + 1])))
+            buf = buf[start + length + 4:]
+        return out
+
+    def store(self, frames, slot=0):
+        """Save frames into the speaker's user-define memory (vendor command 0x8c)."""
+        data = [b for img, ms in frames for b in encode_frame(img, ms)]
+        size = list(len(data).to_bytes(4, "little"))
+        self.replies(0.2)
+        self.send(USER_DEFINE, [0x00] + size + [slot])
+        # The speaker answers with an 0xb1 ack and an 0x8c "send from offset 0".
+        if not any(cmd in (USER_DEFINE, 0xb1) for cmd, _ in self.replies(3)):
+            raise RuntimeError("speaker did not accept the upload")
+        chunks = [data[i:i + 256] for i in range(0, len(data), 256)]
+        for i, chunk in enumerate(chunks):
+            self.send(USER_DEFINE, [0x01] + size + list(i.to_bytes(2, "little")) + chunk)
+            time.sleep(0.05)
+        for cmd, reply in self.replies(1):
+            if cmd == USER_DEFINE and reply[:1] == [0x01] and len(reply) >= 3:
+                i = int.from_bytes(bytes(reply[1:3]), "little")
+                if i < len(chunks):  # resend request
+                    self.send(USER_DEFINE, [0x01] + size + list(i.to_bytes(2, "little")) + chunks[i])
+        self.send(USER_DEFINE, [0x02])
+        self.replies(0.5)
+
+    def gallery(self, slot=None):
+        self.send(SET_VIEW, [VIEW_USER_DEFINE])
+        if slot is not None:
+            self.send(EXTENDED, [USE_USER_DEFINE_INDEX, slot])
+
+    def light(self, rgb, brightness=100, power=True):
+        self.send(SET_VIEW, [0x01, *rgb, brightness, 0x00, 0x01 if power else 0x00, 0, 0, 0])
+
+    def brightness(self, value):
+        self.send(SET_BRIGHTNESS, [value])
+
+    def clock(self, style=0, twentyfour=True):
+        now = datetime.datetime.now()
+        self.send(SET_DATE_TIME, [now.year % 100, now.year // 100, now.month, now.day,
+                                  now.hour, now.minute, now.second, now.isoweekday() % 7])
+        self.send(SET_TIME_TYPE, [1 if twentyfour else 0])
+        self.send(SET_VIEW, [0x00, 1 if twentyfour else 0, style, 0x01, 0, 0, 0])
+
+    def frames(self, frames):
+        """frames: list of (16x16 RGB PIL image, duration ms)."""
+        encoded = [encode_frame(img, ms if len(frames) > 1 else None) for img, ms in frames]
+        if len(encoded) == 1:
+            self.send(SET_IMAGE, [0x00, 0x0A, 0x0A, 0x04] + encoded[0])
+            return
+        data = [b for frame in encoded for b in frame]
+        for index, start in enumerate(range(0, len(data), CHUNK)):
+            self.send(SET_ANIMATION_FRAME,
+                      list(len(data).to_bytes(2, "little")) + [index] + data[start:start + CHUNK])
+            time.sleep(0.02)
+
+
+def pixels_of(img):
+    return list(img.get_flattened_data() if hasattr(img, "get_flattened_data") else img.getdata())
+
+
+def encode_frame(img, ms):
+    pixels = pixels_of(img)
+    palette = list(dict.fromkeys(pixels))  # first-appearance order
+    index = {c: i for i, c in enumerate(palette)}
+    bits = max(1, math.ceil(math.log2(len(palette)))) if len(palette) > 1 else 1
+    packed, acc, nbits = [], 0, 0
+    for p in pixels:  # indices packed LSB first
+        acc |= index[p] << nbits
+        nbits += bits
+        while nbits >= 8:
+            packed.append(acc & 0xff)
+            acc >>= 8
+            nbits -= 8
+    if nbits:
+        packed.append(acc & 0xff)
+    body = list((ms or 0).to_bytes(2, "little")) + [0x00, len(palette) % 256]
+    body += [c for rgb in palette for c in rgb] + packed
+    return [0xAA] + list((len(body) + 3).to_bytes(2, "little")) + body
+
+
+def fit(img):
+    img = img.convert("RGBA")
+    if img.size != (SIZE, SIZE):
+        img.thumbnail((SIZE, SIZE), Image.NEAREST)
+        canvas = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 255))
+        canvas.paste(img, ((SIZE - img.width) // 2, (SIZE - img.height) // 2), img)
+        img = canvas
+    flat = Image.new("RGB", img.size, (0, 0, 0))
+    flat.paste(img, mask=img.split()[3])
+    # One byte of palette count per frame, so cap colours.
+    return flat.quantize(255).convert("RGB") if len(set(pixels_of(flat))) > 255 else flat
+
+
+def load_image(path, ms):
+    with Image.open(path) as src:
+        frames = [(fit(f.copy()), ms or f.info.get("duration", 100)) for f in ImageSequence.Iterator(src)]
+    return frames[:60]
+
+
+def scroll_text(message, rgb, ms):
+    font = ImageFont.load_default()
+    width = int(ImageDraw.Draw(Image.new("RGB", (1, 1))).textlength(message, font=font))
+    strip = Image.new("RGB", (width + 2 * SIZE, SIZE))
+    ImageDraw.Draw(strip).text((SIZE, 2), message, fill=tuple(rgb), font=font)
+    step = max(1, math.ceil((width + SIZE) / 60))  # stay within the animation size limits
+    return [(strip.crop((x, 0, x + SIZE, SIZE)), ms) for x in range(0, width + SIZE, step)]
+
+
+def main(argv):
+    if not argv or argv[0] in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    cmd, rest = argv[0], argv[1:]
+    d = Ditoo()
+    try:
+        if cmd == "color":
+            d.light([int(x) for x in rest[:3]], int(rest[3]) if len(rest) > 3 else 100)
+        elif cmd == "brightness":
+            d.brightness(int(rest[0]))
+        elif cmd == "clock":
+            nums = [a for a in rest if a.isdigit()]
+            d.clock(int(nums[0]) if nums else 0, "--12h" not in rest)
+        elif cmd == "image":
+            d.frames(load_image(rest[0], int(rest[1]) if len(rest) > 1 else None))
+        elif cmd == "text":
+            rgb = [int(x) for x in rest[1:4]] if len(rest) >= 4 else [255, 255, 255]
+            ms = int(rest[4]) if len(rest) > 4 else 80
+            d.frames(scroll_text(rest[0], rgb, ms))
+        elif cmd == "store":
+            d.store(load_image(rest[0], None), int(rest[1]) if len(rest) > 1 else 0)
+        elif cmd == "gallery":
+            d.gallery(int(rest[0]) if rest else None)
+        elif cmd == "off":
+            d.light([1, 1, 1], 0, power=False)
+        elif cmd == "on":
+            d.light([1, 1, 1], 100, power=True)
+        else:
+            print(__doc__)
+            return 2
+    finally:
+        d.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
